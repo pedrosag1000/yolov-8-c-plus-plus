@@ -2,6 +2,10 @@
 
 #include <iostream>
 #include <opencv2/opencv.hpp>
+#include <chrono>
+#include <thread>
+#include "task_thread_pool.hpp"
+
 
 using namespace std;
 using namespace cv;
@@ -17,10 +21,10 @@ std::vector<std::string> load_class_list() {
 }
 
 void load_net(cv::dnn::Net &net, bool is_cuda) {
-    //wokring well on ../yolov5m.onnx
+
     auto result = cv::dnn::readNet("../yolov8n.onnx");
     if (is_cuda) {
-        std::cout << "Attempty to use CUDA\n";
+        std::cout << "Attempt to use CUDA\n";
         result.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
         result.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA_FP16);
     } else {
@@ -173,16 +177,66 @@ detect(cv::Mat &image, cv::dnn::Net &net, std::vector<Detection> &output, const 
     }
 }
 
+vector<Ptr<Tracker>> trackers;
+std::vector<std::string> class_list = load_class_list();
+std::vector<Detection> detectedObjects;
+bool hasNewDetection=false;
+std::vector<Detection> newDetections;
+task_thread_pool::task_thread_pool pool;
+
+int frameId=-1;
+Mat frame;
+
+void threadNewDetection(){
+    while(true){
+        detectedObjects.clear();
+//        detect(frame, net, detectedObjects, class_list);
+    }
+}
+
+void doTrackers(){
+    int lastFrameId=frameId;
+
+    while(true) {
+        if(lastFrameId==frameId){
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            continue;
+        }
+        lastFrameId=frameId;
+        for(int i=0;i<trackers.size();i++ ){
+            Rect box;
+            trackers[i]->update(frame,box);
+        }
+    }
+}
+
+Rect updateTrackerAndReturnRect(const Ptr<Tracker>& tracker){
+    Rect box;
+    tracker->update(frame,box);
+    return box;
+}
+
 int main(int argc, char **argv) {
 
-    std::vector<std::string> class_list = load_class_list();
 
-    cv::VideoCapture cap("../../assets/9.MP4");
+
+
+    cv::VideoCapture cap("../../assets/3.mp4");
     // Check if camera opened successfully
     if(!cap.isOpened()){
         cout << "Error opening video stream or file" << endl;
         return -1;
     }
+
+    Mat originalFrame;
+
+    cap >> originalFrame;
+    if(originalFrame.empty()) {
+        cout << "Error opening video stream or file" << endl;
+        return -1;
+    }
+    resize(originalFrame,frame,Size(1920,1080));
+
 
     bool is_cuda = argc > 1 && strcmp(argv[1], "cuda") == 0;
 
@@ -191,33 +245,51 @@ int main(int argc, char **argv) {
 
     auto start = std::chrono::high_resolution_clock::now();
 
-    Mat frame;
-    std::vector<Detection> output;
 
     while(true){
-
-
+        double timer = (double)getTickCount();
         // Capture frame-by-frame
-        cap >> frame;
+        cap >> originalFrame;
+        resize(originalFrame,frame,Size(1920,1080));
+        frameId++;
 
-        resize(frame,frame,Size(1920,1080));
+        if(frameId % 100 == 0) {
+            detectedObjects.clear();
+            detect(frame, net, detectedObjects, class_list);
 
-        output.clear();
-        detect(frame, net, output, class_list);
+            if(!detectedObjects.empty()) {
+                Detection largestDetection = detectedObjects[0];
+                for (int i = 1; i < detectedObjects.size(); i++) {
+                    if(largestDetection.box.width < detectedObjects[i].box.width)
+                        largestDetection=detectedObjects[i];
+                }
+                trackers.clear();
+
+                Ptr<Tracker> tracker=TrackerMIL::create();
+
+                tracker->init(frame,largestDetection.box);
+                trackers.push_back(tracker);
+            }
+        }
 
 
-        for (int i = 0; i < output.size(); ++i) {
+        for(int i=0;i<trackers.size();i++){
+            Rect box;
+            trackers[i]->update(frame,box);
 
-            auto detection = output[i];
-            auto box = detection.box;
+            auto detection = detectedObjects[i];
             auto classId = detection.class_id;
             const auto color = colors[classId % colors.size()];
             cv::rectangle(frame, box, color, 3);
 
             cv::rectangle(frame, cv::Point(box.x, box.y - 20), cv::Point(box.x + box.width, box.y), color, cv::FILLED);
-            cv::putText(frame, class_list[classId].c_str(), cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+            cv::putText(frame, to_string(i)+" : "+class_list[classId] + " , "+to_string(detection.confidence), cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                         cv::Scalar(0, 0, 0));
         }
+
+
+        float fps = getTickFrequency() / ((double)getTickCount() - timer);
+        putText(frame, "FPS : " + to_string(int(fps)), Point(100,50), FONT_HERSHEY_SIMPLEX, 0.75, Scalar(0,0,255), 2);
 
 
         cv::imshow("output", frame);
@@ -227,10 +299,12 @@ int main(int argc, char **argv) {
             break;
 
 
+
         // Press  ESC on keyboard to exit
         char c=(char) cv::waitKey(25);
         if(c==27)
             break;
+
     }
 
 
