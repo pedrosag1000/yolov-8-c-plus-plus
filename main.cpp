@@ -22,7 +22,7 @@ std::vector<std::string> load_class_list() {
 
 void load_net(cv::dnn::Net &net, bool is_cuda) {
 
-    auto result = cv::dnn::readNet("../yolov8n.onnx");
+    auto result = cv::dnn::readNet("../best.onnx");
     if (is_cuda) {
         std::cout << "Attempt to use CUDA\n";
         result.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
@@ -194,22 +194,6 @@ void threadNewDetection(){
     }
 }
 
-void doTrackers(){
-    int lastFrameId=frameId;
-
-    while(true) {
-        if(lastFrameId==frameId){
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            continue;
-        }
-        lastFrameId=frameId;
-        for(int i=0;i<trackers.size();i++ ){
-            Rect box;
-            trackers[i]->update(frame,box);
-        }
-    }
-}
-
 Rect updateTrackerAndReturnRect(const Ptr<Tracker>& tracker){
     Rect box;
     tracker->update(frame,box);
@@ -218,10 +202,7 @@ Rect updateTrackerAndReturnRect(const Ptr<Tracker>& tracker){
 
 int main(int argc, char **argv) {
 
-
-
-
-    cv::VideoCapture cap("../../assets/3.mp4");
+    cv::VideoCapture cap("../../assets/9.MP4");
     // Check if camera opened successfully
     if(!cap.isOpened()){
         cout << "Error opening video stream or file" << endl;
@@ -253,29 +234,48 @@ int main(int argc, char **argv) {
         resize(originalFrame,frame,Size(1920,1080));
         frameId++;
 
+
+
         if(frameId % 100 == 0) {
             detectedObjects.clear();
             detect(frame, net, detectedObjects, class_list);
 
             if(!detectedObjects.empty()) {
-                Detection largestDetection = detectedObjects[0];
-                for (int i = 1; i < detectedObjects.size(); i++) {
-                    if(largestDetection.box.width < detectedObjects[i].box.width)
-                        largestDetection=detectedObjects[i];
-                }
                 trackers.clear();
+                for (int i = 1; i < detectedObjects.size(); i++) {
+                    Ptr<Tracker> tracker=TrackerMIL::create();
 
-                Ptr<Tracker> tracker=TrackerMIL::create();
+                    tracker->init(frame,detectedObjects[i].box);
+                    trackers.push_back(tracker);
+                }
 
-                tracker->init(frame,largestDetection.box);
-                trackers.push_back(tracker);
+
+//
+//
+//                Detection largestDetection = detectedObjects[0];
+//                for (int i = 1; i < detectedObjects.size(); i++) {
+//                    if(largestDetection.box.width < detectedObjects[i].box.width)
+//                        largestDetection=detectedObjects[i];
+//                }
+//                trackers.clear();
+//
+//                Ptr<Tracker> tracker=TrackerMIL::create();
+//
+//
+//                tracker->init(frame,largestDetection.box);
+//                trackers.push_back(tracker);
             }
         }
 
 
+
+        vector<future<Rect>> futures;
+        for(int i=0;i<trackers.size();i++) {
+            futures.push_back(pool.submit([i] { return updateTrackerAndReturnRect(trackers[i]); }));
+
+        }
         for(int i=0;i<trackers.size();i++){
-            Rect box;
-            trackers[i]->update(frame,box);
+            Rect box=futures[i].get();
 
             auto detection = detectedObjects[i];
             auto classId = detection.class_id;
