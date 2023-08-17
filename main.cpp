@@ -22,7 +22,7 @@ std::vector<std::string> load_class_list() {
 
 void load_net(cv::dnn::Net &net, bool is_cuda) {
 
-    auto result = cv::dnn::readNet("../best.onnx");
+        auto result = cv::dnn::readNet("../best.onnx");
     if (is_cuda) {
         std::cout << "Attempt to use CUDA\n";
         result.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
@@ -202,7 +202,10 @@ Rect updateTrackerAndReturnRect(const Ptr<Tracker>& tracker){
 
 int main(int argc, char **argv) {
 
-    cv::VideoCapture cap("../../assets/9.MP4");
+    VideoWriter videoWriter;
+
+
+    cv::VideoCapture cap("../../assets/8.MP4");
     // Check if camera opened successfully
     if(!cap.isOpened()){
         cout << "Error opening video stream or file" << endl;
@@ -219,6 +222,23 @@ int main(int argc, char **argv) {
     resize(originalFrame,frame,Size(1920,1080));
 
 
+//    videoWriter.open("appsrc ! x264x tune=zerolatency ! rtph264pay aggregate-mode=zero-latency ! udpsink host=127.0.0.1 port 8123",CAP_GSTREAMER,0,(double)30,Size(frame.cols,frame.rows),true);
+
+//    videoWriter.open("appsrc ! autovideoconvert ! video/x-raw,format=I420 ! x264x tune=zerolatency ! rtph264pay aggregate-mode=zero-latency ! udpsink host=127.0.0.1 port 8123",CAP_GSTREAMER,0,(double)30,Size(frame.cols,frame.rows),true);
+   // videoWriter.open("appsrc ! videoconvert ! x264enc tune=zerolatency bitrate=500 speed-preset=superfast ! rtph264pay ! udpsink host=127.0.0.1 port=12345",CAP_GSTREAMER,0,(double)30,Size(1920,1080),true);
+   cout<<frame.cols << frame.rows;
+    videoWriter.open("appsrc ! video/x-raw, format=BGR ! queue ! videoconvert ! video/x-raw,format=RGBA ! autovideoconvert ! omxh264enc ! matroskamux ! filesink location=video.mkv sync=false",CAP_GSTREAMER,0,(double)30,Size(frame.cols,frame.rows),true);
+
+//videoWriter.open("video.avi",0,29,Size(frame.cols,frame.rows),true);
+
+    videoWriter.open("appsrc ! queue ! videoconvert ! video/x-raw ! omxh264enc ! video/x-h264 ! h264parse ! rtph264pay ! udpsink host=192.168.0.2 port=5000 sync=false",0,25.0,Size(1920,1080));
+
+//    appsrc ! autovideoconvert ! videoscale ! video/x-raw,format=I420,width=1280,height=720,framerate=30/1 ! jpegenc ! rtpjpegpay ! udpsink host=127.0.0.1 port=5001
+    if(!videoWriter.isOpened()) {
+        cout << "Error opening output video stream" << endl;
+        return -1;
+    }
+
     bool is_cuda = argc > 1 && strcmp(argv[1], "cuda") == 0;
 
     cv::dnn::Net net;
@@ -227,43 +247,52 @@ int main(int argc, char **argv) {
     auto start = std::chrono::high_resolution_clock::now();
 
 
-    while(true){
+    Rect detectionBox(Point(0,0),Point(frame.cols,frame.rows));
+    while(cap.isOpened()){
         double timer = (double)getTickCount();
         // Capture frame-by-frame
         cap >> originalFrame;
         resize(originalFrame,frame,Size(1920,1080));
         frameId++;
 
+        // If the frame is empty, break immediately
+        if (frame.empty()) {
+            break;
+        }
 
+//kond
+      //  if(frameId % 100 == 0) {
+//Tond
+        if(frameId % 100 == 0 || trackers.size()==0) {
 
-        if(frameId % 100 == 0) {
             detectedObjects.clear();
-            detect(frame, net, detectedObjects, class_list);
+            Mat croppedFrame=frame(detectionBox);
+            detect(croppedFrame, net, detectedObjects, class_list);
 
+            trackers.clear();
             if(!detectedObjects.empty()) {
-                trackers.clear();
-                for (int i = 1; i < detectedObjects.size(); i++) {
-                    Ptr<Tracker> tracker=TrackerMIL::create();
 
-                    tracker->init(frame,detectedObjects[i].box);
-                    trackers.push_back(tracker);
+                Detection largestDetection = detectedObjects[0];
+                for (int i = 1; i < detectedObjects.size(); i++) {
+                    if(largestDetection.box.width < detectedObjects[i].box.width)
+                        largestDetection=detectedObjects[i];
                 }
 
+                largestDetection.box.x+=detectionBox.x;
+                largestDetection.box.y+=detectionBox.y;
 
-//
-//
-//                Detection largestDetection = detectedObjects[0];
-//                for (int i = 1; i < detectedObjects.size(); i++) {
-//                    if(largestDetection.box.width < detectedObjects[i].box.width)
-//                        largestDetection=detectedObjects[i];
-//                }
-//                trackers.clear();
-//
-//                Ptr<Tracker> tracker=TrackerMIL::create();
-//
-//
-//                tracker->init(frame,largestDetection.box);
-//                trackers.push_back(tracker);
+                Ptr<Tracker> tracker=TrackerMIL::create();
+
+                Point center(largestDetection.box.x+largestDetection.box.width/2,largestDetection.box.y+largestDetection.box.height/2);
+                detectionBox=Rect(Point(min(frame.cols,max(0,center.x-largestDetection.box.width)),min(frame.rows,max(0,center.y-largestDetection.box.height))),Point(min(frame.cols,max(0,center.x+largestDetection.box.width)),min(frame.rows,max(0,center.y+largestDetection.box.height))));
+
+                tracker->init(frame,largestDetection.box);
+                trackers.push_back(tracker);
+            }
+            else{
+                Point center(detectionBox.x+detectionBox.width/2,detectionBox.y+detectionBox.height/2);
+                detectionBox=Rect(Point(min(frame.cols,max(0,center.x-detectionBox.width)),min(frame.rows,max(0,center.y-detectionBox.height))),Point(min(frame.cols,max(0,center.x+detectionBox.width)),min(frame.rows,max(0,center.y+detectionBox.height))));
+
             }
         }
 
@@ -282,10 +311,18 @@ int main(int argc, char **argv) {
             const auto color = colors[classId % colors.size()];
             cv::rectangle(frame, box, color, 3);
 
-            cv::rectangle(frame, cv::Point(box.x, box.y - 20), cv::Point(box.x + box.width, box.y), color, cv::FILLED);
+            Point center(box.x+box.width/2,box.y+box.height/2);
+            detectionBox=Rect(Point(min(frame.cols,max(0,center.x-box.width)),min(frame.rows,max(0,center.y-box.height))),Point(min(frame.cols,max(0,center.x+box.width)),min(frame.rows,max(0,center.y+box.height))));
+
+
+            cv::rectangle(frame, cv::Point(box.x, box.y - 40), cv::Point(box.x + box.width, box.y), color, cv::FILLED);
             cv::putText(frame, to_string(i)+" : "+class_list[classId] + " , "+to_string(detection.confidence), cv::Point(box.x, box.y - 5), cv::FONT_HERSHEY_SIMPLEX, 0.5,
                         cv::Scalar(0, 0, 0));
+            cv::putText(frame, "X: "+to_string(center.x)+" Y: "+to_string(center.y), cv::Point(box.x, box.y - 25), cv::FONT_HERSHEY_SIMPLEX, 0.5,
+                        cv::Scalar(0, 0, 0));
         }
+
+        cv::rectangle(frame, detectionBox, colors[0], 1);
 
 
         float fps = getTickFrequency() / ((double)getTickCount() - timer);
@@ -293,10 +330,8 @@ int main(int argc, char **argv) {
 
 
         cv::imshow("output", frame);
+        videoWriter.write(frame);
 
-        // If the frame is empty, break immediately
-        if (frame.empty())
-            break;
 
 
 
@@ -310,7 +345,7 @@ int main(int argc, char **argv) {
 
     // When everything done, release the video capture object
     cap.release();
-
+    videoWriter.release();
     // Closes all the frames
     cv::destroyAllWindows();
 
